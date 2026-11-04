@@ -1,0 +1,12 @@
+# vLLM-Omni backend (diffusion support for vLLM). Pin versions for reproducible builds.
+# No HF token here: weights are mounted read-only from /models, the hub is never contacted.
+FROM vllm/vllm-openai:latest
+RUN pip install --no-cache-dir vllm-omni
+ENV HF_HUB_OFFLINE=1 \
+    MODEL_PATH=/models/FLUX.1-dev \
+    SERVED_NAME=black-forest-labs/FLUX.1-dev \
+    ULYSSES_DEGREE=1
+ENTRYPOINT []
+# ULYSSES_DEGREE>1 splits one image across that many GPUs (lower latency, not more throughput)
+CMD vllm serve "$MODEL_PATH" --omni --host 0.0.0.0 --port 8091 \
+    --served-model-name "$SERVED_NAME" --ulysses-degree "$ULYSSES_DEGREE"

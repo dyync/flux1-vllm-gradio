@@ -1,0 +1,75 @@
+# Topology: fetch (one-shot, holds the token) -> N vLLM replicas (one per GPU, offline) -> nginx LB -> Gradio
+# Add a GPU: copy a vllm-gpuN block, change device_ids, and add it to nginx.conf.
+
+x-vllm: &vllm
+  build:
+    context: .
+    dockerfile: Dockerfile.backend
+  volumes:
+    - models:/models:ro
+  ipc: host
+  depends_on:
+    fetch:
+      condition: service_completed_successfully
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:8091/v1/models"]
+    interval: 30s
+    timeout: 5s
+    start_period: 600s
+    retries: 3
+
+services:
+  # The only container that ever sees the HF token. Runs once, then exits.
+  fetch:
+    image: python:3.12-slim
+    secrets: [hf_token]
+    environment:
+      - HF_TOKEN_PATH=/run/secrets/hf_token
+      - MODEL_REVISION=${MODEL_REVISION:-main}  # pin to a commit SHA in production
+    volumes:
+      - models:/models
+    command: >
+      sh -c "pip install -q 'huggingface_hub[hf_xet]' &&
+             hf download black-forest-labs/FLUX.1-dev --revision $$MODEL_REVISION
+               --local-dir /models/FLUX.1-dev
+               --exclude flux1-dev.safetensors ae.safetensors"
+
+  vllm-gpu0:
+    <<: *vllm
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, device_ids: ["0"], capabilities: [gpu] }]
+
+  vllm-gpu1:
+    <<: *vllm
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, device_ids: ["1"], capabilities: [gpu] }]
+
+  lb:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on: [vllm-gpu0, vllm-gpu1]
+    ports:
+      - "8091:8091"  # OpenAI-compatible API for non-Gradio clients
+
+  gradio:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    environment:
+      - VLLM_URL=http://lb:8091
+    ports:
+      - "7860:7860"
+    depends_on: [lb]
+
+secrets:
+  hf_token:
+    file: ./secrets/hf_token  # local dev only; in prod inject from a secret manager
+
+volumes:
+  models:

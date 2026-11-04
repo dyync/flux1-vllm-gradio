@@ -1,0 +1,4 @@
+secrets/*
+!secrets/README
+.env
+__pycache__/
